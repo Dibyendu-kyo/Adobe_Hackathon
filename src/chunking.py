@@ -68,7 +68,7 @@ def create_semantic_chunks(pdf_path, outline_json):
         chunk = {
             'doc_name': doc_name,
             'section_title': section_title,
-            'page_num': page_num,
+            'page_number': page_num,  # Use 'page_number' instead of 'page_num'
             'content': chunk_text
         }
         chunks.append(chunk)
