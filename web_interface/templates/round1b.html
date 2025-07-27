@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+
+{% block title %}Round 1B - Persona-Driven Intelligence{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>
+                <i class="fas fa-brain me-2 text-warning"></i>
+                Round 1B: Persona-Driven Document Intelligence
+            </h2>
+            <a href="/" class="btn btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Home
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0">
+                    <i class="fas fa-upload me-2"></i>
+                    Upload PDF Documents
+                </h5>
+            </div>
+            <div class="card-body">
+                <form id="round1b-form" enctype="multipart/form-data">
+                    <div class="upload-area" id="upload-area">
+                        <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                        <p class="mb-2">Drag and drop 3-10 related PDFs here, or click to select</p>
+                        <input type="file" id="pdf-files" name="pdf_files" accept=".pdf" multiple class="form-control" style="display: none;">
+                        <button type="button" class="btn btn-outline-primary" onclick="document.getElementById('pdf-files').click()">
+                            Choose PDF Files
+                        </button>
+                        <small class="text-muted d-block mt-2">
+                            3-10 related documents | Maximum 50MB per file
+                        </small>
+                    </div>
+                    
+                    <div id="files-info" class="mt-3" style="display: none;">
+                        <div class="alert alert-info">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span>
+                                    <i class="fas fa-files me-2"></i>
+                                    <span id="files-count">0</span> files selected
+                                </span>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearFiles()">
+                                    Clear
+                                </button>
+                            </div>
+                            <div id="files-list" class="mt-2"></div>
+                        </div>
+                    </div>
+
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <label for="persona" class="form-label">Persona:</label>
+                            <input type="text" class="form-control" id="persona" name="persona" 
+                                   placeholder="e.g., Travel Planner, Food Critic, Investment Analyst" 
+                                   value="Travel Planner" required>
+                        </div>
+                    </div>
+
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <label for="job_to_be_done" class="form-label">Job to be Done:</label>
+                            <textarea class="form-control" id="job_to_be_done" name="job_to_be_done" rows="3" 
+                                      placeholder="Describe the specific task or goal..." required>Plan a 4-day trip for a group of 10 college friends</textarea>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-warning w-100 mt-3" id="process-btn" disabled>
+                        <i class="fas fa-cogs me-2"></i>
+                        Process Documents
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header">
+                <h6 class="mb-0">
+                    <i class="fas fa-info-circle me-2"></i>
+                    Round 1B Constraints
+                </h6>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled mb-0">
+                    <li><i class="fas fa-clock text-warning me-2"></i>Processing time: ≤60 seconds</li>
+                    <li><i class="fas fa-files text-warning me-2"></i>Document count: 3-10 PDFs</li>
+                    <li><i class="fas fa-database text-warning me-2"></i>Model size: ≤1GB</li>
+                    <li><i class="fas fa-wifi-slash text-warning me-2"></i>Offline processing</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-chart-bar me-2"></i>
+                    Processing Results
+                </h5>
+            </div>
+            <div class="card-body">
+                <div id="processing-status" style="display: none;">
+                    <div class="text-center">
+                        <div class="spinner-border text-warning" role="status">
+                            <span class="visually-hidden">Processing...</span>
+                        </div>
+                        <p class="mt-2">Analyzing documents with semantic models...</p>
+                        <small class="text-muted">This may take up to 60 seconds</small>
+                    </div>
+                </div>
+
+                <div id="results" style="display: none;">
+                    <div class="row mb-3">
+                        <div class="col-4">
+                            <div class="card bg-light">
+                                <div class="card-body text-center">
+                                    <h6 class="card-title">Time</h6>
+                                    <span class="processing-time h6" id="processing-time">-</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-4">
+                            <div class="card bg-light">
+                                <div class="card-body text-center">
+                                    <h6 class="card-title">Documents</h6>
+                                    <span class="h6" id="documents-count">-</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-4">
+                            <div class="card bg-light">
+                                <div class="card-body text-center">
+                                    <h6 class="card-title">Sections</h6>
+                                    <span class="h6" id="sections-count">-</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Top Relevant Sections:</label>
+                        <div id="top-sections"></div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Constraints Check:</label>
+                        <div>
+                            <span class="badge" id="time-constraint">Time Limit</span>
+                            <span class="badge" id="format-constraint">Format Valid</span>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <button class="btn btn-primary" id="download-btn" disabled>
+                            <i class="fas fa-download me-2"></i>
+                            Download JSON
+                        </button>
+                    </div>
+                </div>
+
+                <div id="no-results" class="text-center text-muted">
+                    <i class="fas fa-files fa-3x mb-3"></i>
+                    <p>Upload 3-10 related PDF documents to see results here</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mt-4" id="json-output-card" style="display: none;">
+            <div class="card-header">
+                <h6 class="mb-0">
+                    <i class="fas fa-code me-2"></i>
+                    JSON Output Preview
+                </h6>
+            </div>
+            <div class="card-body">
+                <pre class="json-output" id="json-output"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('round1b-form');
+    const filesInput = document.getElementById('pdf-files');
+    const uploadArea = document.getElementById('upload-area');
+    const filesInfo = document.getElementById('files-info');
+    const processBtn = document.getElementById('process-btn');
+    const processingStatus = document.getElementById('processing-status');
+    const results = document.getElementById('results');
+    const noResults = document.getElementById('no-results');
+    const jsonOutputCard = document.getElementById('json-output-card');
+
+    // Drag and drop functionality
+    uploadArea.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
+
+    uploadArea.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+    });
+
+    uploadArea.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            filesInput.files = files;
+            handleFilesSelect();
+        }
+    });
+
+    filesInput.addEventListener('change', handleFilesSelect);
+
+    function handleFilesSelect() {
+        const files = filesInput.files;
+        if (files.length > 0) {
+            document.getElementById('files-count').textContent = files.length;
+            
+            const filesList = document.getElementById('files-list');
+            filesList.innerHTML = '';
+            
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const fileDiv = document.createElement('div');
+                fileDiv.className = 'small text-muted';
+                fileDiv.innerHTML = `${file.name} (${formatFileSize(file.size)})`;
+                filesList.appendChild(fileDiv);
+            }
+            
+            filesInfo.style.display = 'block';
+            processBtn.disabled = files.length < 3 || files.length > 10;
+            
+            if (files.length < 3) {
+                showAlert('Please select at least 3 PDF files for Round 1B', 'warning');
+            } else if (files.length > 10) {
+                showAlert('Please select maximum 10 PDF files for Round 1B', 'warning');
+            }
+        }
+    }
+
+    function clearFiles() {
+        filesInput.value = '';
+        filesInfo.style.display = 'none';
+        processBtn.disabled = true;
+    }
+
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(form);
+        
+        // Show processing status
+        processingStatus.style.display = 'block';
+        results.style.display = 'none';
+        noResults.style.display = 'none';
+        jsonOutputCard.style.display = 'none';
+        processBtn.disabled = true;
+
+        fetch('/api/round1b/process', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            processingStatus.style.display = 'none';
+            processBtn.disabled = false;
+
+            if (data.success) {
+                // Show results
+                results.style.display = 'block';
+                document.getElementById('processing-time').textContent = formatTime(data.processing_time);
+                document.getElementById('documents-count').textContent = data.documents_processed;
+                document.getElementById('sections-count').textContent = data.extracted_sections;
+
+                // Show top sections
+                const topSections = document.getElementById('top-sections');
+                topSections.innerHTML = '';
+                
+                if (data.result.extracted_sections) {
+                    data.result.extracted_sections.slice(0, 3).forEach(section => {
+                        const sectionDiv = document.createElement('div');
+                        sectionDiv.className = 'small mb-1';
+                        sectionDiv.innerHTML = `
+                            <strong>${section.importance_rank}.</strong> 
+                            ${section.section_title} 
+                            <span class="text-muted">(${section.document}, p${section.page_number})</span>
+                        `;
+                        topSections.appendChild(sectionDiv);
+                    });
+                }
+
+                // Update constraint badges
+                const timeConstraint = document.getElementById('time-constraint');
+                const formatConstraint = document.getElementById('format-constraint');
+                
+                timeConstraint.className = `badge ${data.constraints_met.time_limit ? 'bg-success' : 'bg-danger'}`;
+                timeConstraint.textContent = `Time: ${formatTime(data.processing_time)} ${data.constraints_met.time_limit ? '✓' : '✗'}`;
+                
+                formatConstraint.className = `badge ${data.constraints_met.format_valid ? 'bg-success' : 'bg-danger'}`;
+                formatConstraint.textContent = `Format ${data.constraints_met.format_valid ? '✓' : '✗'}`;
+
+                // Enable download
+                const downloadBtn = document.getElementById('download-btn');
+                downloadBtn.disabled = false;
+                downloadBtn.onclick = () => {
+                    window.open(`/api/download/${data.output_file}`, '_blank');
+                };
+
+                // Show JSON output
+                jsonOutputCard.style.display = 'block';
+                document.getElementById('json-output').textContent = formatJSON(data.result);
+            } else {
+                showAlert(`Error: ${data.error}`, 'danger');
+                noResults.style.display = 'block';
+            }
+        })
+        .catch(error => {
+            processingStatus.style.display = 'none';
+            processBtn.disabled = false;
+            showAlert(`Error: ${error.message}`, 'danger');
+            noResults.style.display = 'block';
+        });
+    });
+
+    // Make clearFiles function global
+    window.clearFiles = clearFiles;
+});
+</script>
+{% endblock %}
