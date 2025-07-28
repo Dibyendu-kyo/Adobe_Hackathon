@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
 
     // Process with Round 1A Python script with timeout
     const result = await new Promise((resolve, reject) => {
-      const pythonScript = path.join(process.cwd(), 'scripts', 'process_round1a.py')
+      const pythonScript = path.join(process.cwd(), 'scripts', 'process_round1a_wrapper.py')
       const python = spawn('python', [pythonScript, tempFilePath], {
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: PROCESS_TIMEOUT

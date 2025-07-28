@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
       const startTime = Date.now()
       
       const result = await new Promise((resolve, reject) => {
-        const pythonScript = path.join(process.cwd(), 'scripts', 'process_round1b.py')
+        const pythonScript = path.join(process.cwd(), 'scripts', 'process_round1b_wrapper.py')
         const args = [pythonScript, modelsPath, persona, jobToBeDone, ...savedFiles]
         const python = spawn('python', args)
         

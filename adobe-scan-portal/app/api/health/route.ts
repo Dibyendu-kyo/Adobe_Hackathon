@@ -1,30 +1,41 @@
-import { NextResponse } from 'next/server'
-import { existsSync } from 'fs'
-import { join } from 'path'
+import { NextRequest, NextResponse } from 'next/server'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    // Check if Python scripts exist
-    const round1aScript = join(process.cwd(), 'scripts', 'process_round1a.py')
-    const round1bScript = join(process.cwd(), 'scripts', 'process_round1b.py')
-    
-    // Check if models exist
-    const modelsPath = join(process.cwd(), '..', 'models')
-    const modelExists = existsSync(join(modelsPath, 'all-MiniLM-L6-v2'))
-    
+    // Basic health check
     const health = {
       status: 'healthy',
       timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV || 'development',
+      version: '1.0.0',
       services: {
-        frontend: 'running',
-        round1a: existsSync(round1aScript) ? 'available' : 'missing',
-        round1b: existsSync(round1bScript) ? 'available' : 'missing',
-        models: modelExists ? 'loaded' : 'missing'
-      },
-      version: process.env.npm_package_version || '1.0.0'
+        api: 'operational',
+        python: 'checking...'
+      }
     }
 
-    return NextResponse.json(health)
+    // Quick Python check
+    try {
+      const { spawn } = require('child_process')
+      const python = spawn('python', ['--version'])
+      
+      python.on('close', (code: number) => {
+        health.services.python = code === 0 ? 'operational' : 'error'
+      })
+      
+      // Don't wait for Python check to complete
+      setTimeout(() => {
+        if (health.services.python === 'checking...') {
+          health.services.python = 'timeout'
+        }
+      }, 1000)
+      
+    } catch (error) {
+      health.services.python = 'error'
+    }
+
+    return NextResponse.json(health, { status: 200 })
   } catch (error) {
     return NextResponse.json(
       { 

@@ -1,16 +1,18 @@
 {
+  "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "framework": "nextjs",
   "functions": {
     "app/api/*/route.ts": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "memory": 3008
     }
   },
   "env": {
     "NODE_ENV": "production",
-    "PYTHONPATH": "/app",
-    "MODELS_PATH": "/app/models"
+    "PYTHONPATH": "/var/task",
+    "MODELS_PATH": "/var/task/models"
   },
   "build": {
     "env": {
@@ -32,8 +34,18 @@
         {
           "key": "Access-Control-Allow-Headers",
           "value": "Content-Type, Authorization"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
         }
       ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/:path*"
     }
   ]
 }

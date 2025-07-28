@@ -152,12 +152,9 @@ export default function AdobeScanPortal() {
                 <div className="bg-red-600 text-white px-3 py-1 rounded font-bold text-lg">Adobe</div>
               </div>
             </div>
-            <Button
-              variant="outline"
-              className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white bg-transparent"
-            >
-              Login
-            </Button>
+            <div className="flex items-center space-x-4">
+              <span className="text-gray-600 font-medium">Adobe Hackathon 2024</span>
+            </div>
           </div>
         </div>
       </motion.nav>

@@ -1,80 +1,77 @@
-# Multi-stage Docker build for Adobe Hackathon PDF Processing App
-
-# Stage 1: Build Next.js frontend
-FROM node:18-alpine AS frontend-builder
-WORKDIR /app/frontend
-COPY adobe-scan-portal/package*.json ./
-RUN npm ci --only=production
-COPY adobe-scan-portal/ ./
-RUN npm run build
-
-# Stage 2: Prepare Python backend
-FROM python:3.9-slim AS backend-builder
-WORKDIR /app
+# Multi-stage build for universal deployment
+FROM python:3.11-slim as python-base
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
+    build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python requirements and install dependencies
-COPY requirements.txt ./
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+
+# Set working directory
+WORKDIR /app
+
+# Copy Python requirements and install
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy Python source code
 COPY round1a/ ./round1a/
 COPY round1b/ ./round1b/
-COPY adobe-scan-portal/scripts/ ./scripts/
+COPY download_models.py .
 
-# Download models if not present
-COPY download_models.py ./
-RUN python download_models.py || echo "Models download failed, continuing..."
+# Download AI models
+RUN python download_models.py
 
-# Stage 3: Final production image
-FROM python:3.9-slim AS production
+# Copy Next.js application
+COPY adobe-scan-portal/ ./adobe-scan-portal/
 
-# Install Node.js in the Python image
+# Install Node.js dependencies and build
+WORKDIR /app/adobe-scan-portal
+RUN npm install
+RUN npm run build
+
+# Production stage
+FROM python:3.11-slim as production
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
-    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+
+# Set working directory
 WORKDIR /app
 
-# Copy Python dependencies and code from backend builder
-COPY --from=backend-builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
-COPY --from=backend-builder /app ./
+# Copy Python dependencies
+COPY --from=python-base /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=python-base /usr/local/bin /usr/local/bin
 
-# Copy Next.js build from frontend builder
-COPY --from=frontend-builder /app/frontend/.next ./adobe-scan-portal/.next
-COPY --from=frontend-builder /app/frontend/public ./adobe-scan-portal/public
-COPY --from=frontend-builder /app/frontend/package*.json ./adobe-scan-portal/
-COPY --from=frontend-builder /app/frontend/next.config.mjs ./adobe-scan-portal/
-COPY --from=frontend-builder /app/frontend/tailwind.config.ts ./adobe-scan-portal/
-COPY --from=frontend-builder /app/frontend/postcss.config.mjs ./adobe-scan-portal/
-COPY --from=frontend-builder /app/frontend/components.json ./adobe-scan-portal/
-COPY --from=frontend-builder /app/frontend/tsconfig.json ./adobe-scan-portal/
-
-# Install Node.js production dependencies
-WORKDIR /app/adobe-scan-portal
-RUN npm ci --only=production
-
-# Create necessary directories
-RUN mkdir -p /tmp/uploads
+# Copy application files
+COPY --from=python-base /app/round1a ./round1a
+COPY --from=python-base /app/round1b ./round1b
+COPY --from=python-base /app/models ./models
+COPY --from=python-base /app/adobe-scan-portal ./adobe-scan-portal
 
 # Set environment variables
 ENV NODE_ENV=production
 ENV PYTHONPATH=/app
 ENV MODELS_PATH=/app/models
+ENV PORT=3000
 
 # Expose port
 EXPOSE 3000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:3000/api/health || exit 1
 
 # Start the application
-CMD ["npm", "start"]
+WORKDIR /app/adobe-scan-portal
+CMD ["npm", "start", "--", "--hostname", "0.0.0.0", "--port", "3000"]
