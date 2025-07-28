@@ -2,236 +2,413 @@ import fitz  # PyMuPDF
 import json
 import re
 import os
-import torch
-from sentence_transformers import SentenceTransformer, CrossEncoder, util
 from collections import Counter, defaultdict
+import numpy as np
+from typing import Dict, List, Tuple, Optional
 
-# --- Part 1: Document Structure Extractor (Round 1A) ---
-def extract_document_structure(pdf_path):
-    """
-    Extracts a structured outline using a robust, non-hardcoded approach, compliant with Adobe's constraints.
-    """
-    doc = fitz.open(pdf_path)
-    output = {"title": "Title Not Found", "outline": []}
-    headings = []
-    font_counts = Counter()
-    font_size_to_lines = defaultdict(list)
-    page_texts = []
-    page_headings = defaultdict(list)
+class AdvancedPDFExtractor:
+    def __init__(self):
+        self.font_analysis_cache = {}
+        self.structure_patterns = {
+            'heading_patterns': [
+                r'^[A-Z][A-Z\s]+$',  # ALL CAPS
+                r'^\d+\.\s+[A-Z]',   # Numbered headings
+                r'^[IVX]+\.\s+[A-Z]', # Roman numerals
+                r'^[A-Z]\.[A-Z\s]+$', # Letter headings
+                r'^Chapter\s+\d+',    # Chapter headings
+                r'^Section\s+\d+',    # Section headings
+            ],
+            'content_indicators': [
+                'procedure', 'step', 'instruction', 'guide', 'tutorial',
+                'example', 'note', 'tip', 'warning', 'important'
+            ]
+        }
 
-    # 1. Profile the document's body text to establish a baseline.
-    for page_num, page in enumerate(doc):
-        text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-        page_texts.append(page.get_text())
-        for block in text_dict.get("blocks", []):
-            if block['type'] == 0:  # text block
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        font_counts[(span['size'], span['font'])] += len(span['text'].strip())
-                        font_size_to_lines[span['size']].append(span['text'].strip())
+    def extract_document_structure(self, pdf_path: str) -> Tuple[Dict, Optional[fitz.Document]]:
+        """
+        Advanced document structure extraction using multiple analysis techniques.
+        """
+        try:
+            doc = fitz.open(pdf_path)
+            if not doc:
+                return {"title": "Document Not Found", "outline": []}, None
 
-    if not font_counts:
-        doc.close()
-        return output, None
+            # Multi-stage analysis
+            text_blocks = self._extract_text_blocks(doc)
+            font_analysis = self._analyze_font_hierarchy(doc)
+            layout_analysis = self._analyze_layout_structure(doc)
+            semantic_analysis = self._analyze_semantic_structure(text_blocks)
+            
+            # Combine analyses for robust heading detection
+            headings = self._detect_headings_advanced(
+                text_blocks, font_analysis, layout_analysis, semantic_analysis
+            )
+            
+            # Extract title using multiple methods
+            title = self._extract_title_advanced(doc, headings)
+            
+            # Build structured outline
+            outline = self._build_structured_outline(headings, doc)
+            
+            result = {
+                "title": title,
+                "outline": outline,
+                "metadata": {
+                    "total_pages": len(doc),
+                    "detected_headings": len(headings),
+                    "font_hierarchy_levels": len(font_analysis.get('hierarchy', [])),
+                    "extraction_method": "advanced_multi_analysis"
+                }
+            }
+            
+            return result, doc
+            
+        except Exception as e:
+            print(f"Error extracting structure from {pdf_path}: {e}")
+            return {"title": "Extraction Error", "outline": []}, None
 
-    body_text_style = font_counts.most_common(1)[0][0]
-    body_text_size = body_text_style[0]
+    def _extract_text_blocks(self, doc: fitz.Document) -> List[Dict]:
+        """Extract text blocks with detailed positioning and formatting information."""
+        text_blocks = []
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            
+            for block in text_dict.get("blocks", []):
+                if block['type'] == 0:  # text block
+                    for line in block.get("lines", []):
+                        line_text = "".join(span['text'] for span in line['spans'])
+                        if line_text.strip():
+                            # Get detailed span information
+                            spans_info = []
+                            for span in line['spans']:
+                                spans_info.append({
+                                    'text': span['text'],
+                                    'font': span['font'],
+                                    'size': span['size'],
+                                    'flags': span['flags'],
+                                    'bbox': span.get('bbox', [0, 0, 0, 0])
+                                })
+                            
+                            text_blocks.append({
+                                'text': line_text.strip(),
+                                'page': page_num + 1,
+                                'bbox': line.get('bbox', [0, 0, 0, 0]),
+                                'spans': spans_info,
+                                'font_info': self._extract_font_info(spans_info)
+                            })
+        
+        return text_blocks
 
-    # 2. Extract potential headings using multi-factor heuristics.
-    for page_num, page in enumerate(doc):
-        text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-        mediabox = page.rect
-        for block in text_dict.get("blocks", []):
-            if block['type'] == 0:
-                if len(block.get("lines", [])) == 1:
-                    line = block["lines"][0]
-                    line_text = "".join(s['text'] for s in line['spans']).strip()
-                    if not line_text:
-                        continue
-                    span = line['spans'][0]
-                    font_size = span['size']
-                    font_name = span['font']
-                    bbox = span['bbox'] if 'bbox' in span else None
-                    is_larger = font_size > body_text_size + 0.5
-                    is_bold = "bold" in font_name.lower() or "black" in font_name.lower() or (span['flags'] & 16)
-                    is_short = len(line_text.split()) < 25
-                    is_not_sentence = not line_text.endswith('.')
-                    is_not_date = not re.match(r'^\w+\s\d{1,2},\s\d{4}$', line_text)
-                    is_numbered = bool(re.match(r'^(\d+\.|[IVXLC]+\.|[A-Z]\.)', line_text.strip()))
-                    is_all_caps = line_text.isupper() and len(line_text) > 3
-                    # Centered: check if bbox is roughly centered
-                    is_centered = False
-                    if bbox:
-                        left, top, right, bottom = bbox
-                        center_x = (left + right) / 2
-                        page_center_x = (mediabox.x0 + mediabox.x1) / 2
-                        is_centered = abs(center_x - page_center_x) < (mediabox.width / 8)
-                    # Accept heading if any strong signal
-                    if (is_larger or is_bold or is_numbered or is_all_caps or is_centered) and is_short and is_not_sentence and is_not_date:
-                        headings.append({
-                            'text': line_text,
-                            'size': font_size,
-                            'page': page_num + 1
+    def _extract_font_info(self, spans: List[Dict]) -> Dict:
+        """Extract comprehensive font information from spans."""
+        if not spans:
+            return {}
+        
+        # Aggregate font information
+        fonts = [span['font'] for span in spans]
+        sizes = [span['size'] for span in spans]
+        flags = [span['flags'] for span in spans]
+        
+        return {
+            'primary_font': max(set(fonts), key=fonts.count) if fonts else '',
+            'font_size': np.mean(sizes) if sizes else 0,
+            'max_size': max(sizes) if sizes else 0,
+            'min_size': min(sizes) if sizes else 0,
+            'is_bold': any(flag & 16 for flag in flags),
+            'is_italic': any(flag & 2 for flag in flags),
+            'font_variety': len(set(fonts)),
+            'size_variety': len(set(sizes))
+        }
+
+    def _analyze_font_hierarchy(self, doc: fitz.Document) -> Dict:
+        """Analyze font hierarchy to identify heading levels."""
+        all_fonts = []
+        font_sizes = []
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            
+            for block in text_dict.get("blocks", []):
+                if block['type'] == 0:
+                    for line in block.get("lines", []):
+                        for span in line['spans']:
+                            all_fonts.append(span['font'])
+                            font_sizes.append(span['size'])
+        
+        # Analyze font distribution
+        font_counter = Counter(all_fonts)
+        size_counter = Counter(font_sizes)
+        
+        # Determine hierarchy levels
+        sorted_sizes = sorted(size_counter.keys(), reverse=True)
+        hierarchy = []
+        
+        for i, size in enumerate(sorted_sizes[:5]):  # Top 5 sizes
+            level = f"H{i+1}" if i < 3 else "H3"
+            hierarchy.append({
+                'level': level,
+                'size': size,
+                'frequency': size_counter[size]
+            })
+        
+        return {
+            'hierarchy': hierarchy,
+            'most_common_font': font_counter.most_common(1)[0] if font_counter else ('', 0),
+            'size_distribution': dict(size_counter),
+            'font_distribution': dict(font_counter)
+        }
+
+    def _analyze_layout_structure(self, doc: fitz.Document) -> Dict:
+        """Analyze document layout to identify structural elements."""
+        layout_info = {
+            'page_dimensions': [],
+            'text_regions': [],
+            'margins': [],
+            'column_info': []
+        }
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            rect = page.rect
+            
+            layout_info['page_dimensions'].append({
+                'page': page_num + 1,
+                'width': rect.width,
+                'height': rect.height
+            })
+            
+            # Analyze text positioning
+            text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            text_positions = []
+            
+            for block in text_dict.get("blocks", []):
+                if block['type'] == 0:
+                    for line in block.get("lines", []):
+                        bbox = line.get('bbox', [0, 0, 0, 0])
+                        text_positions.append({
+                            'x': bbox[0],
+                            'y': bbox[1],
+                            'width': bbox[2] - bbox[0],
+                            'height': bbox[3] - bbox[1]
                         })
-                        page_headings[page_num + 1].append(line_text)
+            
+            if text_positions:
+                layout_info['text_regions'].append({
+                    'page': page_num + 1,
+                    'positions': text_positions
+                })
+        
+        return layout_info
 
-    # 3. Try to detect if the first page is a cover (no headings, or very little text)
-    # If so, adjust page numbers for headings if needed (but do not hardcode)
-    if len(page_headings.get(1, [])) == 0 and len(page_texts) > 1:
-        # If first page has no headings and little text, treat as cover
-        if len(page_texts[0].strip()) < 200:
-            for h in headings:
-                h['page'] = max(1, h['page'] - 1)
+    def _analyze_semantic_structure(self, text_blocks: List[Dict]) -> Dict:
+        """Analyze semantic structure of the document."""
+        semantic_info = {
+            'potential_headings': [],
+            'content_sections': [],
+            'structural_patterns': []
+        }
+        
+        for block in text_blocks:
+            text = block['text']
+            font_info = block['font_info']
+            
+            # Check for heading patterns
+            is_heading = self._is_potential_heading(text, font_info)
+            
+            if is_heading:
+                semantic_info['potential_headings'].append({
+                    'text': text,
+                    'page': block['page'],
+                    'font_info': font_info,
+                    'confidence': self._calculate_heading_confidence(text, font_info)
+                })
+            else:
+                semantic_info['content_sections'].append({
+                    'text': text[:200],  # Truncate for analysis
+                    'page': block['page'],
+                    'font_info': font_info
+                })
+        
+        return semantic_info
 
-    # 4. Identify the title: Try PDF metadata, then largest heading on first 2 pages.
-    title = None
-    try:
-        meta = doc.metadata
-        if meta and meta.get('title') and meta['title'].strip().lower() != 'untitled':
-            title = meta['title'].strip()
-    except Exception:
-        pass
-    if not title:
-        first_page_headings = sorted([h for h in headings if h['page'] <= 2], key=lambda x: x['size'], reverse=True)
+    def _is_potential_heading(self, text: str, font_info: Dict) -> bool:
+        """Advanced heading detection using multiple criteria."""
+        if not text or len(text.strip()) < 2:
+            return False
+        
+        text_clean = text.strip()
+        
+        # Multiple heading indicators
+        indicators = 0
+        
+        # 1. Font size indicator
+        if font_info.get('font_size', 0) > 12:  # Larger than body text
+            indicators += 1
+        
+        # 2. Bold text indicator
+        if font_info.get('is_bold', False):
+            indicators += 2
+        
+        # 3. Pattern matching
+        for pattern in self.structure_patterns['heading_patterns']:
+            if re.match(pattern, text_clean):
+                indicators += 2
+                break
+        
+        # 4. Length indicator (headings are typically short)
+        if 3 <= len(text_clean.split()) <= 15:
+            indicators += 1
+        
+        # 5. Case indicator
+        if text_clean.isupper() and len(text_clean) > 3:
+            indicators += 1
+        
+        # 6. Content indicator
+        for indicator in self.structure_patterns['content_indicators']:
+            if indicator.lower() in text_clean.lower():
+                indicators -= 1  # Content words reduce heading likelihood
+                break
+        
+        return indicators >= 2
+
+    def _calculate_heading_confidence(self, text: str, font_info: Dict) -> float:
+        """Calculate confidence score for heading detection."""
+        confidence = 0.0
+        
+        # Font size confidence
+        size = font_info.get('font_size', 0)
+        if size > 16:
+            confidence += 0.3
+        elif size > 12:
+            confidence += 0.2
+        
+        # Bold text confidence
+        if font_info.get('is_bold', False):
+            confidence += 0.3
+        
+        # Pattern confidence
+        for pattern in self.structure_patterns['heading_patterns']:
+            if re.match(pattern, text.strip()):
+                confidence += 0.2
+                break
+        
+        # Length confidence
+        word_count = len(text.split())
+        if 2 <= word_count <= 8:
+            confidence += 0.1
+        
+        return min(confidence, 1.0)
+
+    def _detect_headings_advanced(self, text_blocks: List[Dict], 
+                                 font_analysis: Dict, 
+                                 layout_analysis: Dict, 
+                                 semantic_analysis: Dict) -> List[Dict]:
+        """Advanced heading detection combining multiple analyses."""
+        headings = []
+        
+        # Get font hierarchy for level assignment
+        font_hierarchy = font_analysis.get('hierarchy', [])
+        size_to_level = {item['size']: item['level'] for item in font_hierarchy}
+        
+        for block in text_blocks:
+            text = block['text']
+            font_info = block['font_info']
+            
+            if self._is_potential_heading(text, font_info):
+                # Determine heading level
+                size = font_info.get('font_size', 0)
+                level = size_to_level.get(size, "H3")
+                
+                # Calculate comprehensive confidence
+                confidence = self._calculate_heading_confidence(text, font_info)
+                
+                if confidence > 0.3:  # Only include confident headings
+                    headings.append({
+                        'text': text,
+                        'level': level,
+                        'page': block['page'],
+                        'confidence': confidence,
+                        'font_info': font_info
+                    })
+        
+        # Sort by page and confidence
+        headings.sort(key=lambda x: (x['page'], -x['confidence']))
+        
+        return headings
+
+    def _extract_title_advanced(self, doc: fitz.Document, headings: List[Dict]) -> str:
+        """Extract document title using multiple methods."""
+        title_candidates = []
+        
+        # Method 1: PDF metadata
+        try:
+            metadata = doc.metadata
+            if metadata and metadata.get('title') and metadata['title'].strip():
+                title_candidates.append(('metadata', metadata['title'].strip(), 1.0))
+        except:
+            pass
+        
+        # Method 2: First page headings
+        first_page_headings = [h for h in headings if h['page'] == 1]
         if first_page_headings:
-            title = first_page_headings[0]['text']
-    if not title and headings:
-        title = headings[0]['text']
-    output['title'] = title if title else "Title Not Found"
-
-    # 5. Cluster headings by font size to assign hierarchy (H1, H2, H3 only)
-    if headings:
-        unique_sizes = sorted(list(set([h['size'] for h in headings])), reverse=True)
-        # Map largest to H1, next to H2, all others to H3
-        size_map = {}
-        if len(unique_sizes) >= 3:
-            size_map[unique_sizes[0]] = "H1"
-            size_map[unique_sizes[1]] = "H2"
-            for s in unique_sizes[2:]:
-                size_map[s] = "H3"
-        elif len(unique_sizes) == 2:
-            size_map[unique_sizes[0]] = "H1"
-            size_map[unique_sizes[1]] = "H2"
-        elif len(unique_sizes) == 1:
-            size_map[unique_sizes[0]] = "H1"
-        # Assign levels and filter to H1, H2, H3 only
-        for h in sorted(headings, key=lambda x: (x['page'], -x['size'])):
-            level = size_map.get(h['size'], "H3")
-            if level in {"H1", "H2", "H3"}:
-                output['outline'].append({
-                    "level": level,
-                    "text": h['text'],
-                    "page": h['page']
-                })
-
-    return output, doc
-
-# --- Part 2: Persona-Driven Intelligence Engine (Round 1B) ---
-def perform_semantic_analysis(docs_data, persona, job, models):
-    """
-    Performs semantic analysis with corrected semantic chunking logic.
-    """
-    embedder, reranker = models
-    query = f"Persona: {persona}. Job: {job}"
-    
-    # [cite_start]1. Correctly create semantic chunks from all documents. [cite: 170]
-    all_chunks = []
-    for pdf_name, (outline, doc) in docs_data.items():
-        full_text = "".join([page.get_text() for page in doc])
-        doc_headings = sorted(outline['outline'], key=lambda x: x['page'])
+            best_heading = max(first_page_headings, key=lambda x: x['confidence'])
+            title_candidates.append(('first_heading', best_heading['text'], best_heading['confidence']))
         
-        for i, heading in enumerate(doc_headings):
-            start_pos = full_text.find(heading['text'])
-            if start_pos == -1:
-                continue
+        # Method 3: Largest font on first page
+        try:
+            page = doc.load_page(0)
+            text_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
             
-            end_pos = -1
-            if i + 1 < len(doc_headings):
-                next_heading_text = doc_headings[i+1]['text']
-                end_pos = full_text.find(next_heading_text, start_pos)
+            largest_text = ""
+            largest_size = 0
             
-            chunk_content = full_text[start_pos:end_pos].strip()
-            if len(chunk_content) > 50:  # Ensure chunk is substantial
-                all_chunks.append({
-                    'doc': pdf_name,
-                    'page': heading['page'],
-                    'title': heading['text'],
-                    'content': chunk_content
-                })
-    
-    if not all_chunks:
-        return {"error": "No content chunks could be created."}
-    
-    # [cite_start]2. Initial Retrieval with Embedding Model. [cite: 232-238]
-    chunk_contents = [chunk['content'] for chunk in all_chunks]
-    query_embedding = embedder.encode(query, convert_to_tensor=True)
-    chunk_embeddings = embedder.encode(chunk_contents, convert_to_tensor=True)
-    cosine_scores = util.cos_sim(query_embedding, chunk_embeddings)[0]
-    
-    top_k = min(50, len(all_chunks))
-    top_results_indices = torch.topk(cosine_scores, k=top_k).indices
-    candidate_chunks = [all_chunks[i] for i in top_results_indices]
-    
-    # [cite_start]3. Final Ranking with Cross-Encoder. [cite: 245-251]
-    reranker_pairs = [[query, chunk['content']] for chunk in candidate_chunks]
-    reranker_scores = reranker.predict(reranker_pairs)
-    
-    for i in range(len(candidate_chunks)):
-        candidate_chunks[i]['score'] = reranker_scores[i]
-    
-    ranked_chunks = sorted(candidate_chunks, key=lambda x: x['score'], reverse=True)
-    
-    # [cite_start]4. Format the final JSON output. [cite: 257]
-    final_output = {
-        "metadata": {"persona": persona, "job": job},
-        "extracted_section": [],
-    }
-    
-    for i, chunk in enumerate(ranked_chunks[:10]):
-        final_output["extracted_section"].append({
-            "document": chunk['doc'],
-            "page_number": chunk['page'],
-            "section_title": chunk['title'],
-            "section_content_preview": ' '.join(chunk['content'].split()[:50]) + '...',
-            "importance_rank": i + 1,
-            "relevance_score": float(chunk['score'])
-        })
-    
-    return final_output
+            for block in text_dict.get("blocks", []):
+                if block['type'] == 0:
+                    for line in block.get("lines", []):
+                        for span in line['spans']:
+                            if span['size'] > largest_size and len(span['text'].strip()) > 3:
+                                largest_size = span['size']
+                                largest_text = span['text'].strip()
+            
+            if largest_text:
+                title_candidates.append(('largest_font', largest_text, 0.8))
+        except:
+            pass
+        
+        # Select best title
+        if title_candidates:
+            best_candidate = max(title_candidates, key=lambda x: x[2])
+            return best_candidate[1]
+        
+        return "Untitled Document"
 
-# --- Main Execution Logic ---
+    def _build_structured_outline(self, headings: List[Dict], doc: fitz.Document) -> List[Dict]:
+        """Build structured outline from detected headings."""
+        outline = []
+        
+        for heading in headings:
+            outline.append({
+                "level": heading['level'],
+                "text": heading['text'],
+                "page": heading['page'],
+                "confidence": heading['confidence']
+            })
+        
+        return outline
+
+# Main execution function
 if __name__ == "__main__":
-    INPUT_DIR, OUTPUT_DIR, MODEL_DIR = "./input", "./output", "./models"
-    os.makedirs(INPUT_DIR, exist_ok=True)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    extractor = AdvancedPDFExtractor()
     
-    if not os.path.exists(os.path.join(MODEL_DIR, 'all-MiniLM-L6-v2')):
-        print("Models not found. Please run a script to download them first.")
-    elif not os.listdir(INPUT_DIR):
-        print("Input directory is empty. Please place PDF files in the 'input' folder.")
+    # Example usage
+    pdf_path = "sample.pdf"
+    if os.path.exists(pdf_path):
+        structure, doc = extractor.extract_document_structure(pdf_path)
+        print(json.dumps(structure, indent=2))
+        if doc:
+            doc.close()
     else:
-        print("Loading models...")
-        embedder = SentenceTransformer(os.path.join(MODEL_DIR, 'all-MiniLM-L6-v2'))
-        reranker = CrossEncoder(os.path.join(MODEL_DIR, 'cross-encoder-ms-marco-MiniLM-L6-v2'))
-        print("Models loaded.")
-        
-        docs_data = {}
-        for filename in os.listdir(INPUT_DIR):
-            if filename.lower().endswith('.pdf'):
-                pdf_path = os.path.join(INPUT_DIR, filename)
-                print(f"Processing for structure: {filename}")
-                structure, doc_object = extract_document_structure(pdf_path)
-                if doc_object:
-                    docs_data[filename] = (structure, doc_object)
-        
-        persona = "Investment Analyst"
-        job = "Analyze revenue trends, R&D investments, and market positioning strategies"
-        
-        print("\nPerforming semantic analysis...")
-        analysis_results = perform_semantic_analysis(docs_data, persona, job, (embedder, reranker))
-        
-        output_path = os.path.join(OUTPUT_DIR, "analysis_output.json")
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(analysis_results, f, indent=4, ensure_ascii=False)
-        
-        print(f"\n✅ Analysis complete. Results saved to {output_path}")
+        print(f"PDF file not found: {pdf_path}")

@@ -8,7 +8,15 @@ import { randomUUID } from 'crypto'
 const { spawn } = require('child_process')
 const path = require('path')
 
+// Constants for optimization
+const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB limit
+const PROCESS_TIMEOUT = 30000 // 30 seconds timeout
+const CLEANUP_TIMEOUT = 5000 // 5 seconds for cleanup
+
 export async function POST(request: NextRequest) {
+  const startTime = Date.now()
+  let tempFilePath: string | null = null
+  
   try {
     const formData = await request.formData()
     const file = formData.get('file') as File
@@ -21,81 +29,109 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Only PDF files are supported' }, { status: 400 })
     }
 
-    // Save the uploaded file temporarily
+    // File size validation
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json({ 
+        error: `File too large. Maximum size is ${MAX_FILE_SIZE / (1024 * 1024)}MB` 
+      }, { status: 400 })
+    }
+
+    // Save the uploaded file temporarily with optimized buffer handling
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
     
     const tempId = randomUUID()
-    const tempFilePath = join(tmpdir(), `upload_${tempId}.pdf`)
+    tempFilePath = join(tmpdir(), `upload_${tempId}.pdf`)
     
     await writeFile(tempFilePath, buffer)
 
-    try {
-      // Process with Round 1A Python script
-      const startTime = Date.now()
-      
-      const result = await new Promise((resolve, reject) => {
-        const pythonScript = path.join(process.cwd(), 'scripts', 'process_round1a.py')
-        const python = spawn('python', [pythonScript, tempFilePath])
-        
-        let output = ''
-        let error = ''
-        
-        python.stdout.on('data', (data: Buffer) => {
-          output += data.toString()
-        })
-        
-        python.stderr.on('data', (data: Buffer) => {
-          error += data.toString()
-        })
-        
-        python.on('close', (code: number) => {
-          if (code === 0) {
-            try {
-              const jsonOutput = JSON.parse(output)
-              resolve(jsonOutput)
-            } catch (e) {
-              reject(new Error(`Failed to parse JSON output: ${e}`))
-            }
-          } else {
-            reject(new Error(`Python script failed: ${error}`))
-          }
-        })
-        
-        python.on('error', (err) => {
-          reject(new Error(`Failed to start Python process: ${err}`))
-        })
+    // Process with Round 1A Python script with timeout
+    const result = await new Promise((resolve, reject) => {
+      const pythonScript = path.join(process.cwd(), 'scripts', 'process_round1a.py')
+      const python = spawn('python', [pythonScript, tempFilePath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: PROCESS_TIMEOUT
       })
-
-      const processingTime = (Date.now() - startTime) / 1000
-
-      // Clean up temp file
-      await unlink(tempFilePath)
-
-      return NextResponse.json({
-        success: true,
-        processingTime,
-        result,
-        constraintsMet: {
-          timeLimit: processingTime <= 10,
-          formatValid: typeof result === 'object' && 'title' in result && 'outline' in result
+      
+      let output = ''
+      let error = ''
+      
+      python.stdout.on('data', (data: Buffer) => {
+        output += data.toString()
+      })
+      
+      python.stderr.on('data', (data: Buffer) => {
+        error += data.toString()
+      })
+      
+      python.on('close', (code: number) => {
+        if (code === 0) {
+          try {
+            const jsonOutput = JSON.parse(output)
+            resolve(jsonOutput)
+          } catch (e) {
+            reject(new Error(`Failed to parse JSON output: ${e}`))
+          }
+        } else {
+          reject(new Error(`Python script failed with code ${code}: ${error}`))
         }
       })
-
-    } catch (processingError) {
-      // Clean up temp file on error
-      try {
-        await unlink(tempFilePath)
-      } catch {}
       
-      return NextResponse.json({ 
-        error: `Processing failed: ${processingError}` 
-      }, { status: 500 })
+      python.on('error', (err: Error) => {
+        reject(new Error(`Failed to start Python process: ${err.message}`))
+      })
+
+      python.on('timeout', () => {
+        python.kill('SIGKILL')
+        reject(new Error('Processing timeout exceeded'))
+      })
+    })
+
+    const processingTime = (Date.now() - startTime) / 1000
+
+    // Clean up temp file with timeout
+    if (tempFilePath) {
+      try {
+        await Promise.race([
+          unlink(tempFilePath),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Cleanup timeout')), CLEANUP_TIMEOUT)
+          )
+        ])
+      } catch (cleanupError) {
+        console.warn('Failed to cleanup temp file:', cleanupError)
+      }
     }
 
+    return NextResponse.json({
+      success: true,
+      processingTime,
+      result,
+      constraintsMet: {
+        timeLimit: processingTime <= 10,
+        formatValid: typeof result === 'object' && 'title' in result && 'outline' in result
+      }
+    })
+
   } catch (error) {
+    // Clean up temp file on error
+    if (tempFilePath) {
+      try {
+        await Promise.race([
+          unlink(tempFilePath),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Cleanup timeout')), CLEANUP_TIMEOUT)
+          )
+        ])
+      } catch (cleanupError) {
+        console.warn('Failed to cleanup temp file on error:', cleanupError)
+      }
+    }
+    
+    const errorMessage = error instanceof Error ? error.message : String(error)
     return NextResponse.json({ 
-      error: `Server error: ${error}` 
+      error: `Processing failed: ${errorMessage}`,
+      processingTime: (Date.now() - startTime) / 1000
     }, { status: 500 })
   }
 }
